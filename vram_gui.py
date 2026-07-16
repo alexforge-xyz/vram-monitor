@@ -47,6 +47,8 @@ COLUMNS = {
 class VramMonitorApp:
     def __init__(self, root):
         self.root = root
+        self.admin = core.is_admin()
+        core.enable_debug_privilege()
         self.counters = core.GpuCounters()
         self.gpu_name, self.gpu_total = core.gpu_info()
         self.rows = []
@@ -54,7 +56,8 @@ class VramMonitorApp:
         self.sort_col = "dedicated"
         self.sort_desc = True
 
-        root.title("VRAM Monitor")
+        root.title("VRAM Monitor — Administrator" if self.admin
+                   else "VRAM Monitor")
         root.geometry("1000x560")
         root.minsize(700, 350)
         root.configure(bg=BG)
@@ -68,6 +71,10 @@ class VramMonitorApp:
         root.bind("<F5>", lambda e: self.refresh(force=True))
 
         self.refresh()
+        if not self.admin:
+            self.set_status("No admin rights — system processes (dwm.exe "
+                            "etc.) cannot be killed; use run_gui_admin.bat",
+                            YELLOW)
 
     # ------------------------------------------------------------- layout
 
@@ -144,6 +151,8 @@ class VramMonitorApp:
         self.menu.add_command(label="Copy path",
                               command=self.copy_path)
         self.menu.add_separator()
+        self.menu.add_command(label="Restart process",
+                              command=self.restart_selected)
         self.menu.add_command(label="Kill process",
                               command=self.kill_selected)
 
@@ -247,10 +256,15 @@ class VramMonitorApp:
         row = self._selected_row()
         if not row:
             return
-        warn = ""
-        if row["folder"].lower().startswith(SYSTEM_ROOT):
+        if row["name"].lower() in core.AUTO_RESTARTING:
+            warn = "\n\nℹ This is a Windows shell process — after " \
+                   "termination Windows restarts it automatically " \
+                   "(the screen may flash)."
+        elif row["folder"].lower().startswith(SYSTEM_ROOT):
             warn = "\n\n⚠ This is a Windows system process — killing it " \
                    "is usually a bad idea."
+        else:
+            warn = ""
         if not messagebox.askyesno(
                 "Kill process",
                 f"Terminate {row['name']} (PID {row['pid']})?\n"
@@ -258,6 +272,27 @@ class VramMonitorApp:
                 icon="warning", parent=self.root):
             return
         ok, msg = core.kill_process(row["pid"])
+        self.set_status(f"{row['name']} (PID {row['pid']}): {msg}",
+                        GREEN if ok else RED)
+        if ok:
+            self.refresh(force=True)
+
+    def restart_selected(self):
+        row = self._selected_row()
+        if not row:
+            return
+        auto = row["name"].lower() in core.AUTO_RESTARTING
+        note = ("\n\nWindows will restart it automatically "
+                "(the screen may flash)." if auto else
+                "\n\nThe exe will be relaunched without command-line "
+                "arguments — unsaved data will be lost.")
+        if not messagebox.askyesno(
+                "Restart process",
+                f"Restart {row['name']} (PID {row['pid']})?\n"
+                f"VRAM used: {core.fmt_bytes(row['dedicated'])}{note}",
+                icon="warning", parent=self.root):
+            return
+        ok, msg = core.restart_process(row["pid"], row["name"])
         self.set_status(f"{row['name']} (PID {row['pid']}): {msg}",
                         GREEN if ok else RED)
         if ok:

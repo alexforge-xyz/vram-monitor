@@ -161,6 +161,61 @@ def snapshot(counters):
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
 
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+shell32 = ctypes.WinDLL("shell32")
+
+
+def is_admin():
+    try:
+        return bool(shell32.IsUserAnAdmin())
+    except OSError:
+        return False
+
+
+def enable_debug_privilege():
+    """Enable SeDebugPrivilege for this process.
+
+    An admin token has this privilege but it is DISABLED by default.
+    Without it OpenProcess fails on processes of other users — e.g.
+    dwm.exe, which runs as "Window Manager\\DWM-1" — so we could neither
+    read its exe path nor kill it. Returns True on success (admin only).
+    """
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_QUERY = 0x0008
+    SE_PRIVILEGE_ENABLED = 0x0002
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [("PrivilegeCount", wintypes.DWORD),
+                    ("Privileges", LUID_AND_ATTRIBUTES * 1)]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(),
+                                     TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                                     ctypes.byref(token)):
+        return False
+    try:
+        luid = LUID()
+        if not advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege",
+                                              ctypes.byref(luid)):
+            return False
+        tp = TOKEN_PRIVILEGES()
+        tp.PrivilegeCount = 1
+        tp.Privileges[0].Luid = luid
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+        advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(tp),
+                                       0, None, None)
+        # AdjustTokenPrivileges succeeds even if nothing was assigned;
+        # ERROR_NOT_ALL_ASSIGNED (1300) means we are not elevated.
+        return ctypes.get_last_error() == 0
+    finally:
+        kernel32.CloseHandle(token)
+
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 
@@ -227,7 +282,11 @@ def kill_process(pid):
     if not h:
         err = ctypes.get_last_error()
         if err == 5:
-            return False, "Access denied — run run_admin.bat"
+            if is_admin():
+                return False, ("Access denied — the process is protected "
+                               "by Windows and cannot be terminated")
+            return False, ("Access denied — restart as administrator "
+                           "(run_gui_admin.bat / run_admin.bat)")
         return False, f"OpenProcess: error {err} (process already exited?)"
     try:
         if kernel32.TerminateProcess(h, 1):
@@ -235,6 +294,36 @@ def kill_process(pid):
         return False, f"TerminateProcess: error {ctypes.get_last_error()}"
     finally:
         kernel32.CloseHandle(h)
+
+
+# Processes that Windows relaunches by itself right after termination
+AUTO_RESTARTING = {"dwm.exe", "explorer.exe", "sihost.exe",
+                   "startmenuexperiencehost.exe", "searchhost.exe",
+                   "shellexperiencehost.exe", "textinputhost.exe"}
+
+
+def restart_process(pid, name):
+    """Kill a process and start it again. Returns (ok, message).
+
+    For dwm.exe and other shell processes Windows restarts them
+    automatically, so killing is enough. For regular apps the exe is
+    relaunched from its original path (without command-line arguments).
+    """
+    auto = name.lower() in AUTO_RESTARTING
+    path = process_path(pid)  # grab the path before the process dies
+    if not auto and (not path or not os.path.exists(path)):
+        return False, "Exe path unavailable — cannot relaunch after kill"
+    ok, msg = kill_process(pid)
+    if not ok:
+        return False, msg
+    if auto:
+        return True, f"{name} terminated — Windows will restart it itself"
+    time.sleep(0.5)
+    try:
+        subprocess.Popen([path], cwd=os.path.dirname(path))
+        return True, f"{name} restarted"
+    except OSError as e:
+        return False, f"Killed, but relaunch failed: {e}"
 
 
 def open_folder(pid):
@@ -370,6 +459,7 @@ def main():
                         help="print one snapshot and exit")
     args = parser.parse_args()
 
+    enable_debug_privilege()
     try:
         counters = GpuCounters()
     except OSError as e:

@@ -27,7 +27,9 @@ Requires Python 3.7+ only — no third-party libraries (GUI uses tkinter).
 - click a column header to sort;
 - double-click a row or "Open folder" — process folder in Explorer;
 - Del or "Kill process" — terminate the selected process (with confirmation);
-- right-click — context menu (open folder, copy path, kill);
+- right-click — context menu (open folder, copy path, restart, kill);
+- "Restart process" — kills and relaunches the exe; shell processes
+  (`dwm.exe`, `explorer.exe`, ...) are restarted by Windows itself;
 - "Pause" stops refreshing so the table does not jump under the cursor.
 
 ## Console commands
@@ -51,6 +53,12 @@ Requires Python 3.7+ only — no third-party libraries (GUI uses tkinter).
   (e.g. `dwm.exe` is the desktop compositor; it will restart,
   but the screen will flicker).
 - "Access denied" when killing — run via `run_gui_admin.bat`
-  (or `run_admin.bat` for the console version).
+  (or `run_admin.bat` for the console version). Killing `dwm.exe` and
+  reading its exe path REQUIRE admin rights: dwm runs as a separate user
+  (`Window Manager\DWM-1`), and the app enables SeDebugPrivilege at startup
+  to reach it. The window title shows "Administrator" when elevated.
+- Per-process "Dedicated Usage" is *committed* memory, not resident:
+  Windows pages inactive surfaces out to system RAM under pressure, so
+  the sum of all rows can exceed the actual total used shown at the top.
 - The overall VRAM usage bar and GPU name come from `nvidia-smi`;
   without it the app still works, just without total memory capacity.
